@@ -198,37 +198,6 @@ class NWServerFrontend(QWidget):
         splitter.addWidget(self.output)
         layout.addWidget(splitter)
         self.setLayout(layout)
-        
-        # Connect signals to auto-save config when values change
-        self.server_name.textChanged.connect(self.save_config)
-        self.difficulty.currentIndexChanged.connect(self.save_config)
-        self.autosave.valueChanged.connect(self.save_config)
-        self.level_min.valueChanged.connect(self.save_config)
-        self.level_max.valueChanged.connect(self.save_config)
-        self.max_players.valueChanged.connect(self.save_config)
-        self.local_chars.toggled.connect(self.save_config)
-        self.legal_chars.toggled.connect(self.save_config)
-        self.item_restrict.toggled.connect(self.save_config)
-        self.one_party.toggled.connect(self.save_config)
-        self.reload_empty.toggled.connect(self.save_config)
-        self.module_path.textChanged.connect(self.save_config)
-        self.game_type.currentIndexChanged.connect(self.save_config)
-        self.pvp_type.currentIndexChanged.connect(self.save_config)
-        self.player_password.textChanged.connect(self.save_config)
-        self.dm_password.textChanged.connect(self.save_config)
-        self.admin_password.textChanged.connect(self.save_config)
-        self.server_message.textChanged.connect(self.save_config)
-        self.save_game.textChanged.connect(self.save_config)
-        self.slot_number.valueChanged.connect(self.save_config)
-        self.public_server.toggled.connect(self.save_config)
-        self.port.valueChanged.connect(self.save_config)
-        self.user_dir.textChanged.connect(self.save_config)
-        self.nwserver_path.textChanged.connect(self.save_config)
-        self.nwsync_url.textChanged.connect(self.save_config)
-        self.nwsync_hash.textChanged.connect(self.save_config)
-        self.nwsync_publish.toggled.connect(self.save_config)
-        self.quiet.toggled.connect(self.save_config)
-        self.interactive.toggled.connect(self.save_config)
 
     def browse_user_dir(self):
         dir_ = QFileDialog.getExistingDirectory(self, 'Select User Directory')
@@ -272,6 +241,7 @@ class NWServerFrontend(QWidget):
             self.player_password.setText(s.get('player_password', ''))
             self.dm_password.setText(s.get('dm_password', ''))
             self.admin_password.setText(s.get('admin_password', ''))
+            self.server_message.setText(s.get('server_message', ''))
             self.server_message.setText(s.get('server_message', ''))
             self.save_game.setText(s.get('save_game', ''))
             self.slot_number.setValue(int(s.get('slot_number', 0)))
@@ -325,19 +295,38 @@ class NWServerFrontend(QWidget):
         if self.process:
             self.output.append('Server already running.')
             return
-        cmd = [self.nwserver_path.text()]        # Use -userdirectory if user directory is set (should be early in command)
+        
+        cmd = [self.nwserver_path.text()]
+          # Use -userdirectory if user directory is set (should be early in command)
         if self.user_dir.text():
             user_dir = self.user_dir.text()
             
-            self.output.append(f"Using user directory: {user_dir}")
+            # Ensure we have an absolute path
+            if not os.path.isabs(user_dir):
+                user_dir = os.path.abspath(user_dir)
+                self.output.append(f"Converting to absolute path: {user_dir}")
             
-            # Create user directory if it doesn't exist
+            self.output.append(f"Using user directory: {user_dir}")
+              # Create user directory if it doesn't exist
             try:
-                os.makedirs(user_dir, exist_ok=True)
-                self.output.append(f"User directory created/verified: {user_dir}")
-            except Exception as e:
-                self.output.append(f"Error creating user directory: {str(e)}")
+                if os.path.exists(user_dir):
+                    self.output.append(f"User directory already exists: {user_dir}")
+                    # Check if we have write permissions
+                    if os.access(user_dir, os.W_OK):
+                        self.output.append(f"Write permissions confirmed for: {user_dir}")
+                    else:
+                        self.output.append(f"WARNING: No write permissions for: {user_dir}")
+                else:
+                    os.makedirs(user_dir, exist_ok=True)
+                    self.output.append(f"User directory created: {user_dir}")
+            except PermissionError as e:
+                self.output.append(f"Permission error with user directory: {str(e)}")
+                self.output.append(f"Make sure you have write access to: {user_dir}")
                 return
+            except Exception as e:
+                self.output.append(f"Error with user directory: {str(e)}")
+                return
+            
             cmd += ['-userdirectory', user_dir]
         
         # Map difficulty dropdown to correct values (1-4)
@@ -359,64 +348,11 @@ class NWServerFrontend(QWidget):
         cmd += ['-ilr', '1' if self.item_restrict.isChecked() else '0']
         cmd += ['-oneparty', '1' if self.one_party.isChecked() else '0']
         cmd += ['-reloadwhenempty', '1' if self.reload_empty.isChecked() else '0']
-        cmd += ['-pauseandplay', '1']  # Allow players to pause        # Pass only the module name (no path, no .mod)
+        cmd += ['-pauseandplay', '1']  # Allow players to pause
+        
+        # Pass only the module name (no path, no .mod)
         if self.module_path.text():
             module_name = os.path.splitext(os.path.basename(self.module_path.text()))[0]
-              # Check nwn.ini in user directory for correct paths
-            module_found = False
-            if self.user_dir.text():
-                nwn_ini_path = os.path.join(self.user_dir.text(), 'nwn.ini')
-                if os.path.exists(nwn_ini_path):
-                    try:
-                        import configparser
-                        ini_config = configparser.ConfigParser()
-                        ini_config.read(nwn_ini_path)
-                        
-                        if 'Alias' in ini_config and 'MODULES' in ini_config['Alias']:
-                            modules_path = ini_config['Alias']['MODULES']
-                            
-                            # Handle different path formats
-                            if modules_path.startswith('C:'):
-                                # Windows path - convert to WSL path
-                                modules_path = modules_path.replace('C:', '/mnt/c').replace('\\', '/')
-                            # If it's already a Linux path (starts with /), use as-is
-                            # If it's a relative path, make it relative to user directory
-                            elif not modules_path.startswith('/'):
-                                modules_path = os.path.join(self.user_dir.text(), modules_path)
-                            
-                            module_file_path = os.path.join(modules_path, f'{module_name}.mod')
-                            if os.path.exists(module_file_path):
-                                self.output.append(f"Found module at: {module_file_path} (from nwn.ini)")
-                                module_found = True
-                            else:
-                                self.output.append(f"Module '{module_name}.mod' not found at: {module_file_path}")
-                                # Also show what the original nwn.ini path was
-                                self.output.append(f"  (nwn.ini MODULES path: {ini_config['Alias']['MODULES']})")
-                        else:
-                            self.output.append("No MODULES path found in nwn.ini")
-                    except Exception as e:
-                        self.output.append(f"Error reading nwn.ini: {str(e)}")
-                else:
-                    self.output.append(f"nwn.ini not found at: {nwn_ini_path}")
-            
-            # Fallback checks if nwn.ini method didn't work
-            if not module_found:
-                user_mod_path = os.path.join(self.user_dir.text(), 'modules', f'{module_name}.mod') if self.user_dir.text() else None
-                game_mod_path = os.path.join(os.path.dirname(self.nwserver_path.text()), '..', '..', 'modules', f'{module_name}.mod') if self.nwserver_path.text() else None
-                
-                if user_mod_path and os.path.exists(user_mod_path):
-                    self.output.append(f"Found module at: {user_mod_path}")
-                    module_found = True
-                elif game_mod_path and os.path.exists(game_mod_path):
-                    self.output.append(f"Found module at: {game_mod_path}")
-                    module_found = True
-                else:
-                    self.output.append(f"Warning: Module '{module_name}.mod' not found in expected locations:")
-                    if user_mod_path:
-                        self.output.append(f"  - {user_mod_path}")
-                    if game_mod_path:
-                        self.output.append(f"  - {game_mod_path}")
-            
             cmd += ['-module', module_name]
             
         # Game type as int (1-based, not 0-based)
@@ -465,10 +401,11 @@ class NWServerFrontend(QWidget):
               # Set working directory to the directory containing nwserver-linux
         nwserver_dir = os.path.dirname(self.nwserver_path.text()) if self.nwserver_path.text() else None
         workdir = nwserver_dir
-        
         self.output.append(f'Running: {" ".join(cmd)}')
         try:
-            self.process = subprocess.Popen(cmd, cwd=workdir, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
+            # Don't set working directory - let nwserver handle paths itself
+            # The -userdirectory parameter should be sufficient
+            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
             self.output.append('Server started. Monitoring output...')
             # Don't block the GUI - start a timer to read output periodically
             self.timer = QTimer()
@@ -489,23 +426,7 @@ class NWServerFrontend(QWidget):
                     line = self.process.stdout.readline()
                     if not line:
                         break
-                    line_text = line.strip()
-                    
-                    # Highlight important server messages
-                    if "Working Directory For Your Resources Is:" in line_text:
-                        self.output.append(f">>> {line_text}")
-                        # Extract and verify the path
-                        if ":" in line_text:
-                            reported_path = line_text.split(":", 1)[1].strip()
-                            expected_path = self.user_dir.text()
-                            if reported_path != expected_path:
-                                self.output.append(f">>> WARNING: Server using different path than expected!")
-                                self.output.append(f">>> Expected: {expected_path}")
-                                self.output.append(f">>> Actual: {reported_path}")
-                    elif "Working Directory For Game Install Is:" in line_text:
-                        self.output.append(f">>> {line_text}")
-                    else:
-                        self.output.append(line_text)
+                    self.output.append(line.strip())
             except:
                 pass
         else:
