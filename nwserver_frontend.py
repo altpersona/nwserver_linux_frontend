@@ -4,9 +4,11 @@ import os
 import configparser
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton, QVBoxLayout, QHBoxLayout,
-    QComboBox, QSpinBox, QCheckBox, QFileDialog, QTextEdit, QGroupBox, QGridLayout, QSplitter
+    QComboBox, QSpinBox, QCheckBox, QFileDialog, QTextEdit, QGroupBox, QGridLayout, QSplitter, QScrollArea
 )
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QThread, pyqtSignal
+import threading
+import queue
 
 class NWServerFrontend(QWidget):
     def __init__(self):
@@ -15,34 +17,54 @@ class NWServerFrontend(QWidget):
         self.init_ui()
         self.process = None
         self.config_file = os.path.join(os.path.dirname(__file__), 'nwserver_frontend.ini')
+        self.output_queue = queue.Queue()
         self.load_config()
+        
+    def closeEvent(self, event):
+        """Save configuration when the application is closed"""
+        self.save_config()
+        event.accept()
 
     def init_ui(self):
-        layout = QVBoxLayout()
-
-        # Server options
-        options_group = QGroupBox('Server Options')
-        options_layout = QGridLayout()
-
-        # Server Name
-        options_layout.addWidget(QLabel('Server Name:'), 0, 0)
+        # Create main horizontal splitter for side-by-side layout
+        main_splitter = QSplitter(Qt.Horizontal)
+        
+        # Left panel for configuration
+        config_widget = QWidget()
+        config_layout = QVBoxLayout(config_widget)
+        
+        # Basic Server Settings
+        basic_group = QGroupBox('Basic Settings')
+        basic_layout = QGridLayout()
+        
+        basic_layout.addWidget(QLabel('Server Name:'), 0, 0)
         self.server_name = QLineEdit('Server')
-        options_layout.addWidget(self.server_name, 0, 1)
-
-        # Difficulty
-        options_layout.addWidget(QLabel('Difficulty:'), 1, 0)
+        basic_layout.addWidget(self.server_name, 0, 1)
+        
+        basic_layout.addWidget(QLabel('Difficulty:'), 1, 0)
         self.difficulty = QComboBox()
         self.difficulty.addItems(['Easy', 'Normal', 'Hardcore', 'Very Difficult'])
-        options_layout.addWidget(self.difficulty, 1, 1)
-
-        # Autosave Interval
-        options_layout.addWidget(QLabel('Autosave (min):'), 2, 0)
-        self.autosave = QSpinBox()
-        self.autosave.setRange(0, 120)
-        options_layout.addWidget(self.autosave, 2, 1)
-
-        # Levels
-        options_layout.addWidget(QLabel('Levels:'), 3, 0)
+        basic_layout.addWidget(self.difficulty, 1, 1)
+        
+        basic_layout.addWidget(QLabel('Max Players:'), 2, 0)
+        self.max_players = QSpinBox()
+        self.max_players.setRange(1, 255)
+        self.max_players.setValue(6)
+        basic_layout.addWidget(self.max_players, 2, 1)
+        
+        basic_layout.addWidget(QLabel('Port:'), 3, 0)
+        self.port = QSpinBox()
+        self.port.setRange(1, 65535)
+        self.port.setValue(5120)
+        basic_layout.addWidget(self.port, 3, 1)
+        
+        basic_group.setLayout(basic_layout)
+        
+        # Game Settings
+        game_group = QGroupBox('Game Settings')
+        game_layout = QGridLayout()
+        
+        game_layout.addWidget(QLabel('Levels:'), 0, 0)
         self.level_min = QSpinBox()
         self.level_min.setRange(1, 40)
         self.level_max = QSpinBox()
@@ -52,152 +74,175 @@ class NWServerFrontend(QWidget):
         level_layout.addWidget(self.level_min)
         level_layout.addWidget(QLabel('to'))
         level_layout.addWidget(self.level_max)
-        options_layout.addLayout(level_layout, 3, 1)
-
-        # Max Players
-        options_layout.addWidget(QLabel('Max Players:'), 4, 0)
-        self.max_players = QSpinBox()
-        self.max_players.setRange(1, 255)
-        self.max_players.setValue(6)
-        options_layout.addWidget(self.max_players, 4, 1)
-
-        # Checkboxes (2 columns)
+        game_layout.addLayout(level_layout, 0, 1)
+        
+        game_layout.addWidget(QLabel('Game Type:'), 1, 0)
+        self.game_type = QComboBox()
+        self.game_type.addItems(['Action', 'Story', 'Custom'])
+        game_layout.addWidget(self.game_type, 1, 1)
+        
+        game_layout.addWidget(QLabel('Player vs. Player:'), 2, 0)
+        self.pvp_type = QComboBox()
+        self.pvp_type.addItems(['None', 'Party', 'Full'])
+        game_layout.addWidget(self.pvp_type, 2, 1)
+        
+        game_layout.addWidget(QLabel('Autosave (min):'), 3, 0)
+        self.autosave = QSpinBox()
+        self.autosave.setRange(0, 120)
+        game_layout.addWidget(self.autosave, 3, 1)
+        
+        game_group.setLayout(game_layout)
+        
+        # Options
+        options_group = QGroupBox('Options')
+        options_layout = QGridLayout()
+        
         self.local_chars = QCheckBox('Local Characters Allowed')
         self.legal_chars = QCheckBox('Enforce Legal Characters')
         self.item_restrict = QCheckBox('Item Level Restrictions')
         self.one_party = QCheckBox('Only One Party')
         self.reload_empty = QCheckBox('Reload When Empty')
+        self.public_server = QCheckBox('Post Game To Internet')
         self.local_chars.setChecked(True)
         self.one_party.setChecked(True)
-        # Place checkboxes in 2 columns
-        options_layout.addWidget(self.local_chars, 5, 0)
-        options_layout.addWidget(self.legal_chars, 5, 1)
-        options_layout.addWidget(self.item_restrict, 6, 0)
-        options_layout.addWidget(self.one_party, 6, 1)
-        options_layout.addWidget(self.reload_empty, 7, 1)
-
-        # Module Path
-        options_layout.addWidget(QLabel('Module Path:'), 11, 0)
-        self.module_path = QLineEdit()
-        options_layout.addWidget(self.module_path, 11, 1)
-        self.module_path_btn = QPushButton('Browse')
-        self.module_path_btn.clicked.connect(self.browse_module_path)
-        options_layout.addWidget(self.module_path_btn, 11, 2)
-
-        # Game Type
-        options_layout.addWidget(QLabel('Game Type:'), 12, 0)
-        self.game_type = QComboBox()
-        self.game_type.addItems(['Action', 'Story', 'Custom'])
-        options_layout.addWidget(self.game_type, 12, 1)
-
-        # Player vs. Player
-        options_layout.addWidget(QLabel('Player vs. Player:'), 13, 0)
-        self.pvp_type = QComboBox()
-        self.pvp_type.addItems(['None', 'Party', 'Full'])
-        options_layout.addWidget(self.pvp_type, 13, 1)
-
-        # Player Password
-        options_layout.addWidget(QLabel('Player Password:'), 14, 0)
-        self.player_password = QLineEdit()
-        options_layout.addWidget(self.player_password, 14, 1)
-
-        # DM Password
-        options_layout.addWidget(QLabel('DM Password:'), 15, 0)
-        self.dm_password = QLineEdit()
-        options_layout.addWidget(self.dm_password, 15, 1)
-
-        # Server Admin Password
-        options_layout.addWidget(QLabel('Server Admin Password:'), 16, 0)
-        self.admin_password = QLineEdit()
-        options_layout.addWidget(self.admin_password, 16, 1)
-
-        # Server Message
-        options_layout.addWidget(QLabel('Server Message:'), 17, 0)
-        self.server_message = QLineEdit()
-        options_layout.addWidget(self.server_message, 17, 1)
-
-        # Save Game Path
-        options_layout.addWidget(QLabel('Save Game:'), 18, 0)
-        self.save_game = QLineEdit()
-        options_layout.addWidget(self.save_game, 18, 1)
-        self.save_game_btn = QPushButton('Browse')
-        self.save_game_btn.clicked.connect(self.browse_save_game)
-        options_layout.addWidget(self.save_game_btn, 18, 2)
-
-        # Slot Number
-        options_layout.addWidget(QLabel('Slot Number:'), 19, 0)
-        self.slot_number = QSpinBox()
-        self.slot_number.setRange(0, 99)
-        options_layout.addWidget(self.slot_number, 19, 1)
-
-        # Public Server (Post Game To Internet)
-        options_layout.addWidget(QLabel('Post Game To Internet:'), 20, 0)
-        self.public_server = QCheckBox()
         self.public_server.setChecked(True)
-        options_layout.addWidget(self.public_server, 20, 1)
-
-        # Port
-        options_layout.addWidget(QLabel('Port:'), 21, 0)
-        self.port = QSpinBox()
-        self.port.setRange(1, 65535)
-        self.port.setValue(5120)
-        options_layout.addWidget(self.port, 21, 1)
-
-        # NWSync URL
-        options_layout.addWidget(QLabel('NWSync URL:'), 22, 0)
-        self.nwsync_url = QLineEdit()
-        options_layout.addWidget(self.nwsync_url, 22, 1)
-        # NWSync Hash
-        options_layout.addWidget(QLabel('NWSync Hash:'), 23, 0)
-        self.nwsync_hash = QLineEdit()
-        options_layout.addWidget(self.nwsync_hash, 23, 1)
-        # NWSync Publish HAKs
-        self.nwsync_publish = QCheckBox('NWSync Publish HAKs')
-        options_layout.addWidget(self.nwsync_publish, 24, 0, 1, 2)
-        # Quiet
-        self.quiet = QCheckBox('Quiet Mode')
-        options_layout.addWidget(self.quiet, 25, 0, 1, 2)
-        # Interactive
-        self.interactive = QCheckBox('Interactive Mode')
-        options_layout.addWidget(self.interactive, 26, 0, 1, 2)
-
+        
+        options_layout.addWidget(self.local_chars, 0, 0)
+        options_layout.addWidget(self.legal_chars, 0, 1)
+        options_layout.addWidget(self.item_restrict, 1, 0)
+        options_layout.addWidget(self.one_party, 1, 1)
+        options_layout.addWidget(self.reload_empty, 2, 0)
+        options_layout.addWidget(self.public_server, 2, 1)
+        
         options_group.setLayout(options_layout)
-        layout.addWidget(options_group)
-
+        
         # Paths
         path_group = QGroupBox('Paths')
         path_layout = QGridLayout()
-        path_layout.addWidget(QLabel('User Directory:'), 0, 0)
+        
+        path_layout.addWidget(QLabel('Module Name:'), 0, 0)
+        self.module_name = QLineEdit()
+        self.module_name.setPlaceholderText('e.g. mymodule (without .mod extension)')
+        path_layout.addWidget(self.module_name, 0, 1, 1, 2)
+        
+        path_layout.addWidget(QLabel('User Directory:'), 1, 0)
         self.user_dir = QLineEdit()
-        path_layout.addWidget(self.user_dir, 0, 1)
+        path_layout.addWidget(self.user_dir, 1, 1)
         self.user_dir_btn = QPushButton('Browse')
         self.user_dir_btn.clicked.connect(self.browse_user_dir)
-        path_layout.addWidget(self.user_dir_btn, 0, 2)
-
-        path_layout.addWidget(QLabel('nwserver-linux Path:'), 1, 0)
+        path_layout.addWidget(self.user_dir_btn, 1, 2)
+        
+        path_layout.addWidget(QLabel('nwserver-linux Path:'), 2, 0)
         self.nwserver_path = QLineEdit()
-        path_layout.addWidget(self.nwserver_path, 1, 1)
+        path_layout.addWidget(self.nwserver_path, 2, 1)
         self.nwserver_path_btn = QPushButton('Browse')
         self.nwserver_path_btn.clicked.connect(self.browse_nwserver_path)
-        path_layout.addWidget(self.nwserver_path_btn, 1, 2)
+        path_layout.addWidget(self.nwserver_path_btn, 2, 2)
+        
         path_group.setLayout(path_layout)
-        layout.addWidget(path_group)
-
+        
+        # Advanced Settings (collapsible or separate tab)
+        advanced_group = QGroupBox('Advanced Settings')
+        advanced_layout = QGridLayout()
+        
+        advanced_layout.addWidget(QLabel('Player Password:'), 0, 0)
+        self.player_password = QLineEdit()
+        advanced_layout.addWidget(self.player_password, 0, 1)
+        
+        advanced_layout.addWidget(QLabel('DM Password:'), 1, 0)
+        self.dm_password = QLineEdit()
+        advanced_layout.addWidget(self.dm_password, 1, 1)
+        
+        advanced_layout.addWidget(QLabel('Server Admin Password:'), 2, 0)
+        self.admin_password = QLineEdit()
+        advanced_layout.addWidget(self.admin_password, 2, 1)
+        
+        advanced_layout.addWidget(QLabel('Server Message:'), 3, 0)
+        self.server_message = QLineEdit()
+        advanced_layout.addWidget(self.server_message, 3, 1)
+        
+        advanced_layout.addWidget(QLabel('Save Game:'), 4, 0)
+        self.save_game = QLineEdit()
+        advanced_layout.addWidget(self.save_game, 4, 1)
+        self.save_game_btn = QPushButton('Browse')
+        self.save_game_btn.clicked.connect(self.browse_save_game)
+        advanced_layout.addWidget(self.save_game_btn, 4, 2)
+        
+        advanced_layout.addWidget(QLabel('Slot Number:'), 5, 0)
+        self.slot_number = QSpinBox()
+        self.slot_number.setRange(0, 99)
+        advanced_layout.addWidget(self.slot_number, 5, 1)
+        
+        advanced_layout.addWidget(QLabel('NWSync URL:'), 6, 0)
+        self.nwsync_url = QLineEdit()
+        advanced_layout.addWidget(self.nwsync_url, 6, 1)
+        
+        advanced_layout.addWidget(QLabel('NWSync Hash:'), 7, 0)
+        self.nwsync_hash = QLineEdit()
+        advanced_layout.addWidget(self.nwsync_hash, 7, 1)
+        
+        self.nwsync_publish = QCheckBox('NWSync Publish HAKs')
+        advanced_layout.addWidget(self.nwsync_publish, 8, 0, 1, 2)
+        
+        self.quiet = QCheckBox('Quiet Mode')
+        advanced_layout.addWidget(self.quiet, 9, 0)
+        
+        self.interactive = QCheckBox('Interactive Mode')
+        advanced_layout.addWidget(self.interactive, 9, 1)
+        
+        advanced_group.setLayout(advanced_layout)
+        
+        # Add all groups to config layout
+        config_layout.addWidget(basic_group)
+        config_layout.addWidget(game_group)
+        config_layout.addWidget(options_group)
+        config_layout.addWidget(path_group)
+        config_layout.addWidget(advanced_group)
+        
         # Start button
         self.start_btn = QPushButton('Start Server')
         self.start_btn.clicked.connect(self.start_server)
-        layout.addWidget(self.start_btn)
-
-        # Output (make resizable)
-        splitter = QSplitter(Qt.Vertical)
-        splitter.addWidget(options_group)
-        splitter.addWidget(path_group)
-        splitter.addWidget(self.start_btn)
+        config_layout.addWidget(self.start_btn)
+        
+        # Add stretch to push everything to top
+        config_layout.addStretch()
+        
+        # Create scroll area for config widget
+        scroll_area = QScrollArea()
+        scroll_area.setWidget(config_widget)
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        
+        # Right panel for output
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        
+        output_label = QLabel('Server Output:')
+        right_layout.addWidget(output_label)
+        
         self.output = QTextEdit()
         self.output.setReadOnly(True)
-        splitter.addWidget(self.output)
-        layout.addWidget(splitter)
-        self.setLayout(layout)
+        self.output.setMinimumHeight(200)
+        right_layout.addWidget(self.output)
+        
+        # Add widgets to main splitter
+        main_splitter.addWidget(scroll_area)
+        main_splitter.addWidget(right_widget)
+        
+        # Set initial sizes - config panel gets 60%, output gets 40%
+        main_splitter.setSizes([600, 400])
+        main_splitter.setStretchFactor(0, 0)  # Config panel doesn't stretch
+        main_splitter.setStretchFactor(1, 1)  # Output panel stretches
+        
+        # Main layout
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(main_splitter)
+        self.setLayout(main_layout)
+        
+        # Set window properties
+        self.setMinimumSize(1000, 700)
+        self.resize(1200, 800)
 
     def browse_user_dir(self):
         dir_ = QFileDialog.getExistingDirectory(self, 'Select User Directory')
@@ -209,11 +254,6 @@ class NWServerFrontend(QWidget):
         if file_:
             self.nwserver_path.setText(file_)
 
-    def browse_module_path(self):
-        file_, _ = QFileDialog.getOpenFileName(self, 'Select Module File')
-        if file_:
-            self.module_path.setText(file_)
-
     def browse_save_game(self):
         file_, _ = QFileDialog.getSaveFileName(self, 'Select Save Game File')
         if file_:
@@ -222,38 +262,41 @@ class NWServerFrontend(QWidget):
     def load_config(self):
         config = configparser.ConfigParser()
         if os.path.exists(self.config_file):
-            config.read(self.config_file)
-            s = config['server']
-            self.server_name.setText(s.get('server_name', 'Server'))
-            self.difficulty.setCurrentIndex(int(s.get('difficulty', 0)))
-            self.autosave.setValue(int(s.get('autosave', 0)))
-            self.level_min.setValue(int(s.get('level_min', 1)))
-            self.level_max.setValue(int(s.get('level_max', 40)))
-            self.max_players.setValue(int(s.get('max_players', 6)))
-            self.local_chars.setChecked(s.get('local_chars', '1') == '1')
-            self.legal_chars.setChecked(s.get('legal_chars', '0') == '1')
-            self.item_restrict.setChecked(s.get('item_restrict', '0') == '1')
-            self.one_party.setChecked(s.get('one_party', '1') == '1')
-            self.reload_empty.setChecked(s.get('reload_empty', '0') == '1')
-            self.module_path.setText(s.get('module_path', ''))
-            self.game_type.setCurrentIndex(int(s.get('game_type', 0)))
-            self.pvp_type.setCurrentIndex(int(s.get('pvp_type', 0)))
-            self.player_password.setText(s.get('player_password', ''))
-            self.dm_password.setText(s.get('dm_password', ''))
-            self.admin_password.setText(s.get('admin_password', ''))
-            self.server_message.setText(s.get('server_message', ''))
-            self.server_message.setText(s.get('server_message', ''))
-            self.save_game.setText(s.get('save_game', ''))
-            self.slot_number.setValue(int(s.get('slot_number', 0)))
-            self.public_server.setChecked(s.get('public_server', '1') == '1')
-            self.port.setValue(int(s.get('port', 5120)))
-            self.user_dir.setText(s.get('user_dir', ''))
-            self.nwserver_path.setText(s.get('nwserver_path', ''))
-            self.nwsync_url.setText(s.get('nwsync_url', ''))
-            self.nwsync_hash.setText(s.get('nwsync_hash', ''))
-            self.nwsync_publish.setChecked(s.get('nwsync_publish', '0') == '1')
-            self.quiet.setChecked(s.get('quiet', '0') == '1')
-            self.interactive.setChecked(s.get('interactive', '0') == '1')
+            try:
+                config.read(self.config_file)
+                s = config['server']
+                self.server_name.setText(s.get('server_name', 'Server'))
+                self.difficulty.setCurrentIndex(int(s.get('difficulty', 0)))
+                self.autosave.setValue(int(s.get('autosave', 0)))
+                self.level_min.setValue(int(s.get('level_min', 1)))
+                self.level_max.setValue(int(s.get('level_max', 40)))
+                self.max_players.setValue(int(s.get('max_players', 6)))
+                self.local_chars.setChecked(s.get('local_chars', '1') == '1')
+                self.legal_chars.setChecked(s.get('legal_chars', '0') == '1')
+                self.item_restrict.setChecked(s.get('item_restrict', '0') == '1')
+                self.one_party.setChecked(s.get('one_party', '1') == '1')
+                self.reload_empty.setChecked(s.get('reload_empty', '0') == '1')
+                self.module_name.setText(s.get('module_name', ''))
+                self.game_type.setCurrentIndex(int(s.get('game_type', 0)))
+                self.pvp_type.setCurrentIndex(int(s.get('pvp_type', 0)))
+                self.player_password.setText(s.get('player_password', ''))
+                self.dm_password.setText(s.get('dm_password', ''))
+                self.admin_password.setText(s.get('admin_password', ''))
+                self.server_message.setText(s.get('server_message', ''))
+                self.save_game.setText(s.get('save_game', ''))
+                self.slot_number.setValue(int(s.get('slot_number', 0)))
+                self.public_server.setChecked(s.get('public_server', '1') == '1')
+                self.port.setValue(int(s.get('port', 5120)))
+                self.user_dir.setText(s.get('user_dir', ''))
+                self.nwserver_path.setText(s.get('nwserver_path', ''))
+                self.nwsync_url.setText(s.get('nwsync_url', ''))
+                self.nwsync_hash.setText(s.get('nwsync_hash', ''))
+                self.nwsync_publish.setChecked(s.get('nwsync_publish', '0') == '1')
+                self.quiet.setChecked(s.get('quiet', '0') == '1')
+                self.interactive.setChecked(s.get('interactive', '0') == '1')
+            except Exception as e:
+                print(f"Error loading config: {e}")
+                # If config is corrupted, continue with defaults
 
     def save_config(self):
         config = configparser.ConfigParser()
@@ -269,7 +312,7 @@ class NWServerFrontend(QWidget):
             'item_restrict': '1' if self.item_restrict.isChecked() else '0',
             'one_party': '1' if self.one_party.isChecked() else '0',
             'reload_empty': '1' if self.reload_empty.isChecked() else '0',
-            'module_path': self.module_path.text(),
+            'module_name': self.module_name.text(),
             'game_type': str(self.game_type.currentIndex()),
             'pvp_type': str(self.pvp_type.currentIndex()),
             'player_password': self.player_password.text(),
@@ -350,10 +393,9 @@ class NWServerFrontend(QWidget):
         cmd += ['-reloadwhenempty', '1' if self.reload_empty.isChecked() else '0']
         cmd += ['-pauseandplay', '1']  # Allow players to pause
         
-        # Pass only the module name (no path, no .mod)
-        if self.module_path.text():
-            module_name = os.path.splitext(os.path.basename(self.module_path.text()))[0]
-            cmd += ['-module', module_name]
+        # Pass the module name directly
+        if self.module_name.text():
+            cmd += ['-module', self.module_name.text()]
             
         # Game type as int (1-based, not 0-based)
         if self.game_type.currentIndex() >= 0:
@@ -398,42 +440,70 @@ class NWServerFrontend(QWidget):
             cmd.append('-quiet')
         if self.interactive.isChecked():
             cmd.append('-interactive')
-              # Set working directory to the directory containing nwserver-linux
+            
+        # Set working directory to the directory containing nwserver-linux
         nwserver_dir = os.path.dirname(self.nwserver_path.text()) if self.nwserver_path.text() else None
-        workdir = nwserver_dir
+        
         self.output.append(f'Running: {" ".join(cmd)}')
+        if nwserver_dir:
+            self.output.append(f'Working directory: {nwserver_dir}')
+            
         try:
-            # Don't set working directory - let nwserver handle paths itself
-            # The -userdirectory parameter should be sufficient
-            self.process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, universal_newlines=True)
+            # Set working directory to the nwserver-linux directory (usually linux-x86)
+            # This is crucial for nwserver to find the game data
+            self.process = subprocess.Popen(
+                cmd, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                text=True, 
+                bufsize=1, 
+                universal_newlines=True,
+                cwd=nwserver_dir  # Set the working directory
+            )
             self.output.append('Server started. Monitoring output...')
-            # Don't block the GUI - start a timer to read output periodically
+            
+            # Start a thread to read output without blocking the GUI
+            self.output_thread = threading.Thread(target=self.read_output_thread, daemon=True)
+            self.output_thread.start()
+            
+            # Start a timer to check for new output
             self.timer = QTimer()
-            self.timer.timeout.connect(self.read_output)
+            self.timer.timeout.connect(self.update_output)
             self.timer.start(100)  # Check every 100ms
         except Exception as e:
             self.output.append(f'Error: {e}')
             self.process = None
 
-    def read_output(self):
+    def read_output_thread(self):
+        """Thread function to read process output without blocking the GUI"""
         if not self.process:
             return
-        # Non-blocking read to avoid freezing the GUI
-        if self.process.poll() is None:  # Process is still running
-            try:
-                # Read available lines without blocking
-                while True:
-                    line = self.process.stdout.readline()
-                    if not line:
-                        break
-                    self.output.append(line.strip())
-            except:
-                pass
-        else:
-            # Process has finished
-            self.timer.stop()
-            self.output.append('Server process ended.')
-            self.process = None
+            
+        try:
+            for line in iter(self.process.stdout.readline, ''):
+                if line:
+                    self.output_queue.put(line.strip())
+                if self.process.poll() is not None:
+                    break
+        except Exception as e:
+            self.output_queue.put(f"Error reading output: {e}")
+        finally:
+            self.output_queue.put("__PROCESS_ENDED__")
+    
+    def update_output(self):
+        """Update the output text widget with new lines from the queue"""
+        try:
+            while True:
+                line = self.output_queue.get_nowait()
+                if line == "__PROCESS_ENDED__":
+                    self.timer.stop()
+                    self.output.append('Server process ended.')
+                    self.process = None
+                    break
+                else:
+                    self.output.append(line)
+        except queue.Empty:
+            pass
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
